@@ -22,27 +22,34 @@ def load_model():
     return WhisperModel("tiny", device="cpu", compute_type="int8")
 
 def download_video(url):
-    path = os.path.join(VIDEO_DIR, "source.%(ext)s")
+    output = os.path.join(VIDEO_DIR, "source.%(ext)s")
     opts = {
-        "format": "best[height<=720]/best",
-        "outtmpl": path,
+        # More compatible with current YouTube formats.
+        "format": "bestvideo[height<=720]+bestaudio/bestvideo+bestaudio/best",
+        "outtmpl": output,
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
     }
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        downloaded = ydl.prepare_filename(info)
-    if not os.path.exists(downloaded):
-        mp4 = os.path.splitext(downloaded)[0] + ".mp4"
-        if os.path.exists(mp4):
-            downloaded = mp4
-    return downloaded
+        filename = ydl.prepare_filename(info)
+    if os.path.exists(filename):
+        return filename
+    mp4 = os.path.splitext(filename)[0] + ".mp4"
+    if os.path.exists(mp4):
+        return mp4
+    # Find the downloaded source if yt-dlp chose another extension.
+    for name in os.listdir(VIDEO_DIR):
+        if name.startswith("source."):
+            return os.path.join(VIDEO_DIR, name)
+    raise FileNotFoundError("Downloaded video file was not found.")
 
 def transcribe(video):
     model = load_model()
     segments, _ = model.transcribe(video, vad_filter=True)
-    return [{"start": s.start, "end": s.end, "text": s.text.strip()} for s in segments if s.text.strip()]
+    return [{"start": s.start, "end": s.end, "text": s.text.strip()}
+            for s in segments if s.text.strip()]
 
 def find_highlights(segments, clip_len, n):
     keywords = [
@@ -65,16 +72,13 @@ def find_highlights(segments, clip_len, n):
         if any(abs(start - old) < clip_len * 0.65 for old in selected):
             continue
         selected.append(start)
-        if len(selected) == n:
+        if len(selected) >= n:
             break
     return sorted(selected)
 
 def make_short(video, start, clip_len, number):
     out = os.path.join(SHORT_DIR, f"short_{number}.mp4")
-    vf = (
-        "scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920"
-    )
+    vf = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
     cmd = [
         "ffmpeg", "-y", "-ss", str(start), "-i", video,
         "-t", str(clip_len), "-vf", vf,
@@ -88,7 +92,6 @@ if st.button("🚀 Generate Shorts", type="primary"):
     if not url.strip():
         st.error("YouTube URL paste karo.")
         st.stop()
-
     try:
         with st.spinner("📥 Video download ho raha hai..."):
             video = download_video(url)
@@ -107,15 +110,12 @@ if st.button("🚀 Generate Shorts", type="primary"):
 
         progress = st.progress(0)
         outputs = []
-
         for i, start in enumerate(starts, 1):
             with st.spinner(f"🎬 Short {i} ban raha hai..."):
-                out = make_short(video, start, duration, i)
-                outputs.append(out)
+                outputs.append(make_short(video, start, duration, i))
             progress.progress(i / len(starts))
 
         st.success(f"✅ {len(outputs)} Shorts ready!")
-
         for i, out in enumerate(outputs, 1):
             st.video(out)
             with open(out, "rb") as f:
@@ -126,7 +126,6 @@ if st.button("🚀 Generate Shorts", type="primary"):
                     mime="video/mp4",
                     key=f"download_{i}"
                 )
-
     except Exception as e:
         st.error(f"Error: {e}")
-        st.info("Tip: YouTube video par download/edit karne ka right hona chahiye.")
+        st.info("Video ko download/edit karne ka right hona chahiye.")
